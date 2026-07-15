@@ -7,6 +7,7 @@
 - 入门与运行: 见《getting-started.md》
 - 架构与目录: 见《architecture.md》
 - 监控系统详解: 见《monitoring-system.md》
+- 自定义脚本动作: 见《script-action-guide.md》
 - 导入监控项说明: 见《monitor-import.md》
 - API 参考: 见《api-reference.md》
 - 数据模型(Prisma): 见《data-models.md》
@@ -22,6 +23,7 @@
 - 数据库升级安全性: `database-upgrade-safety.md`
 - 通知方式开发指南: `notification-development-guide.md`
 - 状态页功能指南: `status-page-guide.md`
+- 自定义脚本动作指南: `script-action-guide.md`
 
 ## 项目要点（高频问题速览）
 

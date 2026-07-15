@@ -47,7 +47,20 @@
   - 失败聚合（失败次数、起止时间、持续分钟）
   - 恢复通知包含故障持续时长
   - 支持: 邮件、Webhook、微信推送、钉钉、企业微信
-- 清理: `data-cleaner.ts`（按系统设置定期清理历史）
+- 清理: `data-cleaner.ts`（按系统设置定期清理历史，包括脚本执行记录）
+
+## 自定义脚本动作
+
+当监控状态变化时，可自动执行用户配置的 Node.js 脚本实现自动化响应。详见《script-action-guide.md》。
+
+- 配置存储: `ScriptAction` 表（每监控项一条，1:1）
+- 执行记录: `ScriptExecution` 表（含真实触发与模拟运行）
+- 子进程执行: `script-runner.ts` 通过 `child_process.spawn` 运行，带超时强杀整个进程组
+- 安全限制: `script-runner-wrapper.cjs` 通过 require 白名单只允许网络/数据模块（http/https/dns/crypto 等），禁止 child_process/fs；子进程只接收最小环境变量（不传密钥）
+- 触发集成: `scheduler.ts` 在状态变化后通过 `setImmediate` 异步触发（不阻塞监控检查）
+- 触发条件: 支持 `down`（仅故障）/ `up`（仅恢复）/ `both`（两者）
+- 首次检查不触发（`prevStatus` 为 null 时跳过）
+- 所有监控类型均支持（含 Push 类型的恢复路径）
 
 ## 类型与配置要点
 

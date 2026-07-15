@@ -68,7 +68,8 @@ async function checkAndSendCertNotification(
       monitorId,
       status,
       notificationMessage,
-      null // 不传入prevStatus，确保通知会发送
+      null, // 不传入prevStatus，确保通知会发送
+      { standalone: true } // 独立通知：不参与上下线状态机去重，避免污染故障/恢复通知缓存
     );
     
     // 标记为已通知

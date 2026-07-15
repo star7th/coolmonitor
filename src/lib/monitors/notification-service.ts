@@ -62,21 +62,102 @@ interface WorkWechatConfig {
   webhookUrl: string;
 }
 
-// 内存缓存，记录每个监控项的最后通知时间和状态
+// 内存缓存，记录每个监控项"上一次真正成功送达"的通知状态与时间。
+// 关键约束：只有发送成功才更新此缓存，发送失败绝不更新。
+// 这样当某次通知发送失败时，下一轮检查会自动重试，避免出现
+// “网站恢复了却永远收不到恢复通知”的问题。
 const notificationCache = new Map<string, { time: number; status: number }>();
+
+// 通知绑定关系（含已加载的通知渠道）的最小结构类型
+interface NotificationBindingWithChannel {
+  notificationChannel: {
+    enabled: boolean;
+    name: string;
+    type: string;
+    config: unknown;
+  };
+}
+
+/**
+ * 构建基础通知数据（含监控地址信息）
+ */
+function buildNotificationData(
+  monitor: { name: string; type: string; config: unknown },
+  status: number,
+  message: string
+): NotificationData {
+  const notificationData: NotificationData = {
+    monitorName: monitor.name,
+    monitorType: monitor.type,
+    status: STATUS_TEXT_CN[status] || '未知',
+    statusText: STATUS_TEXT_CN[status] || '未知',
+    statusCode: status,
+    time: formatDateTime(),
+    message: message || '无详细信息'
+  };
+
+  if (monitor.config) {
+    try {
+      const monitorConfig = monitor.config as Record<string, unknown>;
+      if (monitorConfig.url) {
+        notificationData.message = `监控地址: ${String(monitorConfig.url)}\n${notificationData.message}`;
+      } else if (monitorConfig.hostname) {
+        const address = monitorConfig.port
+          ? `${String(monitorConfig.hostname)}:${String(monitorConfig.port)}`
+          : String(monitorConfig.hostname);
+        notificationData.message = `监控地址: ${address}\n${notificationData.message}`;
+      }
+    } catch (error) {
+      console.error("处理监控配置信息出错:", error);
+    }
+  }
+
+  return notificationData;
+}
+
+/**
+ * 向所有启用的通知渠道发送通知。
+ * @returns 是否至少有一个渠道发送成功（用于决定是否更新送达缓存）
+ */
+async function notifyChannels(
+  bindings: NotificationBindingWithChannel[] | null | undefined,
+  data: NotificationData
+): Promise<boolean> {
+  if (!bindings || bindings.length === 0) {
+    return false;
+  }
+
+  let anySuccess = false;
+  for (const binding of bindings) {
+    const channel = binding.notificationChannel;
+    if (!channel?.enabled) continue;
+
+    try {
+      const config = (channel.config as Record<string, unknown>) || {};
+      await sendNotification(channel.type, config, data);
+      anySuccess = true;
+    } catch (error) {
+      console.error(`向 ${channel.name}(${channel.type}) 发送通知失败:`, error);
+    }
+  }
+
+  return anySuccess;
+}
 
 /**
  * 处理监控状态变更通知
  * @param monitorId 监控项ID
  * @param status 监控状态 (0-异常, 1-正常, 2-等待)
  * @param message 状态消息
- * @param prevStatus 先前状态 (可能为空，表示第一次检查)
+ * @param prevStatus 先前状态 (可能为空，表示第一次检查)；仅作为缓存冷启动时的回退推断
+ * @param options.standalone 独立通知（如证书到期提醒），不参与上下线状态机去重、不读写送达缓存
  */
 export async function sendStatusChangeNotifications(
   monitorId: string,
   status: number,
   message: string,
-  prevStatus: number | null
+  prevStatus: number | null,
+  options?: { standalone?: boolean }
 ) {
   try {
     // 获取监控项详情
@@ -109,21 +190,36 @@ export async function sendStatusChangeNotifications(
     // 检查是否为新添加的监控项（状态历史记录数量小于等于1）
     const isNewMonitor = !monitor.statusHistory || monitor.statusHistory.length <= 1;
 
-    // 使用调度器传入的prevStatus，这是最准确的状态变化信息
-    let realPrevStatus = prevStatus;
-    
-    // 只有当prevStatus为null且有历史记录时，才从历史记录中获取上一个状态
-    // 这种情况通常发生在系统重启后第一次检查
-    if (prevStatus === null && !isNewMonitor && monitor.statusHistory && monitor.statusHistory.length > 1) {
-      const prevStatusFromHistory = monitor.statusHistory[1]?.status;
-      if (prevStatusFromHistory !== undefined && prevStatusFromHistory !== null) {
-        realPrevStatus = prevStatusFromHistory;
+    const now = Date.now();
+    const lastNotification = notificationCache.get(monitorId);
+    // 缓存冷启动（如进程重启、或监控项从未成功送达过任何通知）。
+    // 此时历史/prevStatus 只能“尽力推断”上次送达状态，无法可靠用于抑制发送；
+    // 因此 Down 分支在冷启动时不做抑制，确保故障告警一定能尝试送达并在失败后自动重试。
+    const cacheCold = !lastNotification;
+
+    // 确定上一次“已送达”的通知状态，作为去重与恢复判断的唯一可靠依据。
+    // 正常运行时以内存缓存为准（它只记录真正发送成功的状态）；
+    // 仅在缓存冷启动（如进程重启）时，回退到状态历史 / prevStatus 做尽力推断。
+    let lastNotifiedStatus: number | undefined = lastNotification?.status;
+    if (cacheCold) {
+      if (!isNewMonitor && monitor.statusHistory && monitor.statusHistory.length > 1) {
+        const histPrev = monitor.statusHistory[1]?.status;
+        if (histPrev !== undefined && histPrev !== null) {
+          lastNotifiedStatus = histPrev;
+        }
+      }
+      if (lastNotifiedStatus === undefined && prevStatus !== null && prevStatus !== undefined) {
+        lastNotifiedStatus = prevStatus;
       }
     }
 
-    // 如果状态没有变化，则不发送通知
-    // 注意：当prevStatus为null时，表示这是一个状态变化（从未知状态到当前状态），应该发送通知
-    if (prevStatus !== null && realPrevStatus === status) {
+    // 准备基础通知数据（含监控地址信息）
+    const notificationData = buildNotificationData(monitor, status, message);
+
+    // 独立通知（如证书到期提醒）：不参与上下线状态机的去重，也不读写送达缓存，
+    // 避免污染监控项正常的故障 / 恢复通知流程。
+    if (options?.standalone) {
+      await notifyChannels(monitor.notificationBindings, notificationData);
       return;
     }
 
@@ -132,47 +228,12 @@ export async function sendStatusChangeNotifications(
       return;
     }
 
-    // 准备基础通知数据
-    const notificationData: NotificationData = {
-      monitorName: monitor.name,
-      monitorType: monitor.type,
-      status: STATUS_TEXT_CN[status] || '未知', // 使用中文状态描述
-      statusText: STATUS_TEXT_CN[status] || '未知',
-      statusCode: status, // 保存原始状态码
-      time: formatDateTime(),
-      message: message || '无详细信息'
-    };
-
-    // 添加监控地址信息
-    if (monitor.config) {
-      try {
-        const monitorConfig = monitor.config as Record<string, unknown>;
-        // 添加URL（针对http、https-cert、keyword类型）
-        if (monitorConfig.url) {
-          notificationData.message = `监控地址: ${String(monitorConfig.url)}\n${notificationData.message}`;
-        }
-        // 添加主机和端口信息（针对port、mysql、redis等类型）
-        else if (monitorConfig.hostname) {
-          const address = monitorConfig.port
-            ? `${String(monitorConfig.hostname)}:${String(monitorConfig.port)}`
-            : String(monitorConfig.hostname);
-          notificationData.message = `监控地址: ${address}\n${notificationData.message}`;
-        }
-      } catch (error) {
-        console.error("处理监控配置信息出错:", error);
-      }
-    }
-
-    // 检查上次通知时间和状态
-    const lastNotification = notificationCache.get(monitorId);
-    const now = Date.now();
-
-    // 如果是失败状态
     if (status === 0) {
-      // 如果设置了重复通知间隔（按失败次数），需要检查是否达到重复通知条件
-      if (monitor.resendInterval > 0) {
-        // 如果上次通知状态也是失败状态，需要检查是否达到重复通知的条件
-        if (lastNotification && lastNotification.status === 0) {
+      // —— 故障通知 ——
+      // 已成功送达过故障通知（且缓存非冷启动）时，按 resendInterval 决定是否重复提醒；
+      // 否则视为新故障，发送。冷启动时不抑制，确保故障告警能送达并支持失败重试。
+      if (!cacheCold && lastNotifiedStatus === 0) {
+        if (monitor.resendInterval > 0 && lastNotification) {
           // 获取自上次通知之后的连续失败次数（不包含上次通知时的那次失败）
           const failuresSinceLastNotification = await prisma.monitorStatus.count({
             where: {
@@ -188,10 +249,8 @@ export async function sendStatusChangeNotifications(
           if (failuresSinceLastNotification < monitor.resendInterval) {
             return;
           }
-        }
-      } else {
-        // 如果未设置重复通知间隔（为0），且上次通知状态也是失败，则不发送重复通知
-        if (lastNotification && lastNotification.status === 0) {
+        } else {
+          // 未设置重复通知间隔（为0），且已送达过故障通知，不重复发送
           return;
         }
       }
@@ -235,8 +294,8 @@ export async function sendStatusChangeNotifications(
       });
 
       // 计算失败持续时间
-      const duration = firstContinuousFailure 
-        ? Math.floor((now - firstContinuousFailure.timestamp.getTime()) / 1000 / 60) 
+      const duration = firstContinuousFailure
+        ? Math.floor((now - firstContinuousFailure.timestamp.getTime()) / 1000 / 60)
         : 0;
 
       // 扩展通知数据
@@ -249,72 +308,41 @@ export async function sendStatusChangeNotifications(
         message: `连续失败 ${totalFailures} 次，首次失败于 ${firstContinuousFailure ? formatDateTime(firstContinuousFailure.timestamp) : '未知'}，持续 ${duration} 分钟\n${notificationData.message}`
       };
 
-      // 发送聚合通知
-      for (const binding of monitor.notificationBindings) {
-        const channel = binding.notificationChannel;
-        if (!channel.enabled) continue;
-
-        try {
-          const config = channel.config as Record<string, unknown> || {};
-          await sendNotification(channel.type, config, aggregatedData);
-        } catch (error) {
-          console.error(`向 ${channel.name}(${channel.type}) 发送失败通知失败:`, error);
-        }
+      // 仅当至少一个渠道发送成功时，才把缓存更新为“已送达故障”。
+      // 发送失败则缓存保持不变，下一轮检查会自动重试，确保故障告警不丢失。
+      if (await notifyChannels(monitor.notificationBindings, aggregatedData)) {
+        notificationCache.set(monitorId, { time: now, status: 0 });
+      }
+    } else if (status === 1) {
+      // —— 恢复通知 ——
+      // 仅当之前确实送达过故障通知（lastNotifiedStatus === 0）时才发送恢复通知。
+      // 若上一次恢复通知发送失败，缓存仍停留在 0，因此下一轮检查会自动重试，
+      // 确保用户一定能收到恢复通知。
+      if (lastNotifiedStatus !== 0) {
+        // 持续正常、或从未送达过故障通知，均无需发送恢复通知
+        return;
       }
 
-      // 更新通知缓存
-      notificationCache.set(monitorId, { time: now, status: 0 });
-    } else if (
-      status === 1 &&
-      realPrevStatus === 0 &&
-      !isNewMonitor &&
-      lastNotification &&
-      lastNotification.status === 0
-    ) {
-      // 状态从故障恢复为正常，并且不是新添加的监控时才发送恢复通知
-      
       // 获取恢复前的失败时长
-      const recoverDuration = lastNotification && lastNotification.status === 0
+      const recoverDuration = lastNotification
         ? Math.floor((now - lastNotification.time) / 1000 / 60)
         : 0;
-        
+
       // 增强恢复通知内容
       const recoveryData = {
         ...notificationData,
         message: `监控已恢复正常。${recoverDuration > 0 ? `故障持续了约 ${recoverDuration} 分钟。` : ''}\n${notificationData.message}`
       };
-      
-      // 发送恢复通知
-      for (const binding of monitor.notificationBindings) {
-        const channel = binding.notificationChannel;
-        if (!channel.enabled) continue;
 
-        try {
-          const config = channel.config as Record<string, unknown> || {};
-          await sendNotification(channel.type, config, recoveryData);
-        } catch (error) {
-          console.error(`向 ${channel.name}(${channel.type}) 发送恢复通知失败:`, error);
-        }
+      // 仅当发送成功时才更新缓存为“已送达恢复”，失败则下轮重试
+      if (await notifyChannels(monitor.notificationBindings, recoveryData)) {
+        notificationCache.set(monitorId, { time: now, status: 1 });
       }
-      
-      // 更新通知缓存
-      notificationCache.set(monitorId, { time: now, status: 1 });
     } else {
-      // 其他状态变更通知
-      for (const binding of monitor.notificationBindings) {
-        const channel = binding.notificationChannel;
-        if (!channel.enabled) continue;
-
-        try {
-          const config = channel.config as Record<string, unknown> || {};
-          await sendNotification(channel.type, config, notificationData);
-        } catch (error) {
-          console.error(`向 ${channel.name}(${channel.type}) 发送通知失败:`, error);
-        }
+      // —— 其他状态（如 PENDING）——
+      if (await notifyChannels(monitor.notificationBindings, notificationData)) {
+        notificationCache.set(monitorId, { time: now, status });
       }
-      
-      // 更新通知缓存
-      notificationCache.set(monitorId, { time: now, status });
     }
   } catch (error) {
     console.error(`处理监控 ${monitorId} 状态变更通知时出错:`, error);

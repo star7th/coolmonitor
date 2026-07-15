@@ -55,7 +55,27 @@ export async function cleanupOldData(): Promise<number> {
       WHERE "timestamp" < ${cutoffDate}
     `;
     
+    // 清理脚本执行历史记录
+    let scriptHistoryCleaned = 0;
+    try {
+      scriptHistoryCleaned = await prisma.$executeRaw`
+        DELETE FROM "ScriptExecution"
+        WHERE "createdAt" < ${cutoffDate}
+      `;
+    } catch (error) {
+      // 仅忽略"表不存在"错误（旧版本数据库尚未创建该表），其他错误需正常上报
+      const msg = error instanceof Error ? error.message : String(error);
+      if (/no such table/i.test(msg)) {
+        console.log('清理脚本执行历史时跳过（表尚未创建）');
+      } else {
+        console.error('清理脚本执行历史失败:', error);
+      }
+    }
+    
     console.log(`数据清理完成: 已删除 ${result} 条过期的监控记录 (保留期: ${retentionDays}天)`);
+    if (scriptHistoryCleaned > 0) {
+      console.log(`已删除 ${scriptHistoryCleaned} 条过期的脚本执行记录`);
+    }
     return Number(result);
   } catch (error) {
     console.error('执行数据清理失败:', error);

@@ -355,6 +355,64 @@ const DB_VERSIONS = [
         `);
       }
     }
+  },
+  {
+    version: 11,
+    name: '自定义脚本动作功能',
+    requiredTables: ['ScriptAction', 'ScriptExecution'],
+    check: async () => {
+      return await hasTable('ScriptAction') && await hasTable('ScriptExecution');
+    },
+    upgrade: async () => {
+      // 创建ScriptAction表
+      if (!await hasTable('ScriptAction')) {
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE "ScriptAction" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "monitorId" TEXT NOT NULL,
+            "enabled" BOOLEAN NOT NULL DEFAULT false,
+            "script" TEXT NOT NULL DEFAULT '',
+            "triggerCondition" TEXT NOT NULL DEFAULT 'both',
+            "timeout" INTEGER NOT NULL DEFAULT 30,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" DATETIME NOT NULL,
+            CONSTRAINT "ScriptAction_monitorId_fkey" FOREIGN KEY ("monitorId") REFERENCES "Monitor" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+
+          CREATE UNIQUE INDEX "ScriptAction_monitorId_key" ON "ScriptAction"("monitorId");
+          CREATE INDEX "ScriptAction_monitorId_idx" ON "ScriptAction"("monitorId");
+        `);
+      }
+
+      // 创建ScriptExecution表
+      if (!await hasTable('ScriptExecution')) {
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE "ScriptExecution" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "scriptActionId" TEXT NOT NULL,
+            "exitCode" INTEGER,
+            "output" TEXT NOT NULL DEFAULT '',
+            "durationMs" INTEGER NOT NULL DEFAULT 0,
+            "success" BOOLEAN NOT NULL DEFAULT false,
+            "timedOut" BOOLEAN NOT NULL DEFAULT false,
+            "triggerSource" TEXT NOT NULL DEFAULT 'real',
+            "currentStatus" INTEGER NOT NULL,
+            "prevStatus" INTEGER,
+            "errorMessage" TEXT,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT "ScriptExecution_scriptActionId_fkey" FOREIGN KEY ("scriptActionId") REFERENCES "ScriptAction" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+
+          CREATE INDEX "ScriptExecution_scriptActionId_createdAt_idx" ON "ScriptExecution"("scriptActionId", "createdAt");
+          CREATE INDEX "ScriptExecution_createdAt_idx" ON "ScriptExecution"("createdAt");
+        `);
+      } else if (!await hasIndex('ScriptExecution', 'ScriptExecution_createdAt_idx')) {
+        // 表已存在但缺少 createdAt 单列索引（从旧版本升级），补充创建
+        await prisma.$executeRawUnsafe(`
+          CREATE INDEX IF NOT EXISTS "ScriptExecution_createdAt_idx" ON "ScriptExecution"("createdAt");
+        `);
+      }
+    }
   }
 ];
 
@@ -431,6 +489,19 @@ async function hasColumn(tableName: string, columnName: string): Promise<boolean
     return result.some(col => col.name === columnName);
   } catch (error) {
     console.error(`检查表 ${tableName} 的列 ${columnName} 是否存在失败:`, error);
+    return false;
+  }
+}
+
+// 检查索引是否存在
+async function hasIndex(_tableName: string, indexName: string): Promise<boolean> {
+  try {
+    const result = await prisma.$queryRaw<{name: string}[]>`
+      SELECT name FROM sqlite_master WHERE type='index' AND name=${indexName}
+    `;
+    return Array.isArray(result) && result.length > 0;
+  } catch (error) {
+    console.error(`检查索引 ${indexName} 是否存在失败:`, error);
     return false;
   }
 }

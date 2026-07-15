@@ -22,6 +22,19 @@
 - POST `/api/monitors/batch` 入参: `{ ids: string[], action: 'start'|'stop'|'delete' }`
 - PUT `/api/monitors/reorder` 入参: `{ updates: { id: string, displayOrder: number }[] }`
 
+### 自定义脚本动作 Script Action
+
+所有脚本动作接口均校验当前用户对该监控项的所有权（管理员可访问所有）。详见《script-action-guide.md》。
+
+- GET `/api/monitors/[id]/script-action` — 获取脚本动作配置（不存在时自动创建默认配置）
+- PUT `/api/monitors/[id]/script-action` — 保存脚本动作配置
+  - 入参: `enabled?` `script?` `triggerCondition?('down'|'up'|'both')` `timeout?(1-600秒)`
+- POST `/api/monitors/[id]/script-action/test` — 模拟运行脚本
+  - 入参: `simulatedStatus(1=UP|0=DOWN)` `script?（临时脚本，不保存）`
+  - 出参: `{ result: { exitCode, output, durationMs, success, timedOut, errorMessage, ... } }`
+  - exitCode: 0=成功 1=异常 2=未导出函数 3=语法错误 4=尝试加载禁止模块
+- GET `/api/monitors/[id]/script-action/history?limit=50` — 获取执行历史
+
 ## 分组 Monitor Groups
 
 - GET `/api/monitor-groups`

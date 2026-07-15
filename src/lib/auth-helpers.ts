@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth';
 import { buildAuthOptions } from '@/app/api/auth/[...nextauth]/route';
 import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 
 /**
  * 检查用户是否已登录的辅助函数
@@ -34,5 +35,42 @@ export async function validateAuth() {
   if (!authenticated) {
     return unauthorized();
   }
+  return null;
+}
+
+/**
+ * 验证当前用户是否有权访问指定的监控项。
+ * 管理员可访问所有监控项；普通用户仅能访问自己创建的监控项。
+ * @param monitorId 监控项ID
+ * @returns 有权访问返回 null；无权或未登录返回对应的错误 NextResponse
+ */
+export async function validateMonitorOwnership(monitorId: string) {
+  const authError = await validateAuth();
+  if (authError) return authError;
+
+  const authOptions = await buildAuthOptions();
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json(
+      { error: '未授权的请求' },
+      { status: 401 }
+    );
+  }
+
+  const monitor = await prisma.monitor.findUnique({
+    where: {
+      id: monitorId,
+      // 如果是管理员，可以访问所有监控项
+      ...(session.user.isAdmin ? {} : { createdById: session.user.id })
+    }
+  });
+
+  if (!monitor) {
+    return NextResponse.json(
+      { error: '无权访问此监控项' },
+      { status: 403 }
+    );
+  }
+
   return null;
 } 

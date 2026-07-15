@@ -307,12 +307,16 @@ async function executeMonitorCheck(monitorId: string) {
         
         // 手动发送恢复通知，不记录新状态
         await sendStatusChangeNotifications(monitorId, newStatus, message, MONITOR_STATUS.DOWN);
+        // 触发自定义脚本动作（Push 恢复路径不走 recordMonitorStatus，需单独触发）
+        await triggerScriptActionAsync(monitorId, newStatus, message, MONITOR_STATUS.DOWN);
       } else if (newStatus === MONITOR_STATUS.UP && lastStatus === MONITOR_STATUS.UP && secondLastStatus === MONITOR_STATUS.DOWN) {
         // 特殊情况：当前和上次都是成功，但上上次是失败 - 说明之前从失败恢复为成功但没发通知
         message = `推送恢复正常: 最后推送时间 ${new Date(lastPushTime).toLocaleString()}`;
         
         // 手动发送恢复通知，不记录新状态
         await sendStatusChangeNotifications(monitorId, newStatus, message, MONITOR_STATUS.DOWN);
+        // 触发自定义脚本动作（Push 恢复路径不走 recordMonitorStatus，需单独触发）
+        await triggerScriptActionAsync(monitorId, newStatus, message, MONITOR_STATUS.DOWN);
       }
       
       // 更新监控项状态
@@ -457,8 +461,9 @@ async function executeMonitorCheck(monitorId: string) {
   }
 
   // 记录监控状态
-  // 如果是重试成功，不应该触发恢复通知，因为从用户角度看这次检查就是成功的
-  const effectivePrevStatus = (monitorData.lastStatus || null);
+  // 注意：必须用 ?? 而非 ||，否则 DOWN(0) 的 lastStatus 会被错误地吞成 null，
+  // 导致传给通知服务的 prevStatus 失真。
+  const effectivePrevStatus = monitorData.lastStatus ?? null;
   await recordMonitorStatus(monitorId, status, message, ping, effectivePrevStatus);
 
   // 更新最后检查时间和下次检查时间
@@ -503,4 +508,28 @@ async function recordMonitorStatus(
     console.error(`发送监控 ${monitorId} 状态变更通知失败:`, error);
     // 通知发送失败不影响监控状态记录
   }
+
+  // 触发自定义脚本动作（异步执行，不阻塞监控检查的并发槽位）
+  triggerScriptActionAsync(monitorId, status, message, prevStatus);
+} 
+
+/**
+ * 异步触发自定义脚本动作。
+ * 使用 setImmediate 将脚本执行脱离监控检查的并发槽位，
+ * 避免慢脚本阻塞调度器导致其他监控检查被饿死。
+ */
+function triggerScriptActionAsync(
+  monitorId: string,
+  status: number,
+  message: string,
+  prevStatus: number | null
+) {
+  setImmediate(async () => {
+    try {
+      const { triggerScriptAction } = await import('./script-action-service');
+      await triggerScriptAction(monitorId, status, message, prevStatus);
+    } catch (error) {
+      console.error(`触发监控 ${monitorId} 的自定义脚本动作失败:`, error);
+    }
+  });
 } 

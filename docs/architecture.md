@@ -32,6 +32,7 @@
 2) 定时器触发 → 调用对应检查器（HTTP/端口/数据库/ICMP/Push…）
 3) 记录 `MonitorStatus`，更新 `Monitor` 最近状态
 4) 状态变化 → 通过 `notification-service.ts` 发送通知
+5) 状态变化 → 通过 `script-action-service.ts` 异步触发自定义脚本（如有配置）
 
 ## 关键文件
 
@@ -44,6 +45,7 @@
 - Push: `src/lib/monitors/checker-push.ts`
 - 通知: `src/lib/monitors/notification-service.ts`
 - 状态记录: `src/lib/monitors/status-recorder.ts`
+- 自定义脚本动作: `src/lib/monitors/script-action-service.ts`（子进程执行 `script-runner.ts`，包装器 `scripts/script-runner-wrapper.cjs`）
 
 ## API 概要
 

@@ -6,6 +6,7 @@ import { MonitorSettingsSection } from "./components/MonitorSettingsSection";
 import { NotificationSection } from "./components/NotificationSection";
 import { AdvancedOptionsSection } from "./components/AdvancedOptionsSection";
 import { DatabaseOptionsSection } from "./components/DatabaseOptionsSection";
+import { ScriptActionSection } from "./components/ScriptActionSection";
 import { SimpleNotificationBinding } from "@/types/monitor";
 import { generatePushToken, MonitorConfig } from "@/lib/monitors";
 
@@ -44,7 +45,7 @@ interface MonitorFormProps {
 
 export function MonitorForm({ isOpen, onClose, editMode = false, initialData = null }: MonitorFormProps) {
   // 基本信息
-  const [activeTab, setActiveTab] = useState<'basic' | 'notification' | 'advanced'>('basic');
+  const [activeTab, setActiveTab] = useState<'basic' | 'notification' | 'advanced' | 'script'>('basic');
   const [monitorType, setMonitorType] = useState("http");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -365,10 +366,23 @@ export function MonitorForm({ isOpen, onClose, editMode = false, initialData = n
           >
             高级选项
           </button>
+          <button
+            className={`px-6 py-3 ${activeTab === 'script' 
+              ? 'text-primary border-b-2 border-primary font-medium' 
+              : 'text-foreground/70 hover:text-foreground'}`}
+            onClick={() => setActiveTab('script')}
+          >
+            脚本动作
+          </button>
         </div>
           
         {/* 表单内容 */}
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          // 脚本动作 Tab 有自己独立的保存逻辑，不提交监控项表单
+          if (activeTab === 'script') return;
+          handleSubmit(e);
+        }}>
         <div className="p-6">
             {/* 错误信息显示 */}
             {formError && (
@@ -459,18 +473,38 @@ export function MonitorForm({ isOpen, onClose, editMode = false, initialData = n
                 ignoreTls={ignoreTls}
                 setIgnoreTls={setIgnoreTls}
                             maxRedirects={maxRedirects}
-            setMaxRedirects={setMaxRedirects}
-            connectTimeout={connectTimeout}
-            setConnectTimeout={setConnectTimeout}
-            upsideDown={upsideDown}
-            setUpsideDown={setUpsideDown}
-            notifyCertExpiry={notifyCertExpiry}
-            setNotifyCertExpiry={setNotifyCertExpiry}
+                setMaxRedirects={setMaxRedirects}
+                connectTimeout={connectTimeout}
+                setConnectTimeout={setConnectTimeout}
+                upsideDown={upsideDown}
+                setUpsideDown={setUpsideDown}
+                notifyCertExpiry={notifyCertExpiry}
+                setNotifyCertExpiry={setNotifyCertExpiry}
               />
-          )}
+            )}
+            
+            {activeTab === 'script' && (
+              editMode && initialData?.id ? (
+                <ScriptActionSection monitorId={initialData.id} />
+              ) : (
+                <div className="dark:bg-dark-card bg-light-card rounded-lg border border-primary/15 p-8 text-center">
+                  <i className="fas fa-code text-primary text-4xl mb-4"></i>
+                  <h3 className="text-lg font-medium mb-2">自定义脚本动作</h3>
+                  <p className="text-sm text-foreground/60 max-w-md mx-auto leading-relaxed">
+                    当监控状态变化（UP↔DOWN）时，可自动执行你配置的 Node.js 脚本，
+                    实现自动化故障响应，例如切换 DNS、重启服务、调用 API 等。
+                  </p>
+                  <p className="text-sm text-warning mt-4">
+                    <i className="fas fa-info-circle mr-1"></i>
+                    请先保存监控项，再回来配置脚本动作
+                  </p>
+                </div>
+              )
+            )}
         </div>
         
-        {/* 底部操作按钮 */}
+        {/* 底部操作按钮 - 脚本动作 Tab 下隐藏，该 Tab 有自己的保存按钮 */}
+        {activeTab !== 'script' && (
         <div className="sticky bottom-0 z-10 dark:bg-dark-card bg-light-card border-t border-primary/10 px-6 py-4 flex justify-between items-center">
           <button 
               type="button"
@@ -493,6 +527,7 @@ export function MonitorForm({ isOpen, onClose, editMode = false, initialData = n
               ) : '保存'}
           </button>
         </div>
+        )}
         </form>
       </div>
     </div>

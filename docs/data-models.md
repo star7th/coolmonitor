@@ -100,3 +100,29 @@
 - createdAt
 - 关系: monitor, statusPage
 - 索引: (statusPageId, order)
+
+## ScriptAction（自定义脚本动作配置）
+- id (String, cuid)
+- monitorId (String, 唯一) → Monitor
+- enabled (Boolean, 默认 false) — 是否启用
+- script (String, 默认 '') — 用户脚本源码
+- triggerCondition (String, 默认 'both') — 触发条件：down | up | both
+- timeout (Int, 默认 30) — 执行超时（秒）
+- createdAt/updatedAt
+- 关系: monitor, executions
+- 索引: (monitorId)
+
+## ScriptExecution（脚本执行记录）
+- id (String, cuid)
+- scriptActionId (String) → ScriptAction
+- exitCode (Int?) — 退出码：0=成功 1=异常 2=未导出函数 3=语法错误
+- output (String, 默认 '') — 脚本输出
+- durationMs (Int, 默认 0) — 执行耗时（毫秒）
+- success (Boolean, 默认 false)
+- timedOut (Boolean, 默认 false) — 是否超时
+- triggerSource (String, 默认 'real') — 触发来源：real（真实触发）| simulate（模拟运行）
+- currentStatus (Int) — 触发时的当前状态
+- prevStatus (Int?) — 触发时的上一次状态
+- errorMessage (String?)
+- createdAt (DateTime)
+- 索引: (scriptActionId, createdAt)、(createdAt)

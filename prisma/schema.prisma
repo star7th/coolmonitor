@@ -89,6 +89,41 @@ model Monitor {
   notificationBindings MonitorNotification[]
   statusHistory        MonitorStatus[]
   statusPages          StatusPageMonitor[]
+  scriptAction         ScriptAction?
+}
+
+model ScriptAction {
+  id               String            @id @default(cuid())
+  monitorId        String            @unique
+  enabled          Boolean           @default(false)
+  script           String            @default("")
+  triggerCondition String            @default("both") // down | up | both
+  timeout          Int               @default(30) // 脚本执行超时时间（秒）
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  monitor          Monitor           @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  executions       ScriptExecution[]
+
+  @@index([monitorId])
+}
+
+model ScriptExecution {
+  id              String      @id @default(cuid())
+  scriptActionId  String
+  exitCode        Int?
+  output          String      @default("")
+  durationMs      Int         @default(0)
+  success         Boolean     @default(false)
+  timedOut        Boolean     @default(false)
+  triggerSource   String      @default("real") // real | simulate
+  currentStatus   Int
+  prevStatus      Int?
+  errorMessage    String?
+  createdAt       DateTime    @default(now())
+  scriptAction    ScriptAction @relation(fields: [scriptActionId], references: [id], onDelete: Cascade)
+
+  @@index([scriptActionId, createdAt])
+  @@index([createdAt])
 }
 
 model MonitorNotification {
